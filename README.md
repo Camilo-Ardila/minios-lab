@@ -149,6 +149,14 @@ cd minios-lab
 make
 ```
 
+> Si ya estás autenticado pero `git push` falla con errores de permisos (por ejemplo, `Permission to fguzman82/minios-lab denied`), tu `origin` apunta al repositorio base y no a tu fork. Corrígelo así:
+>
+> ```bash
+> git remote -v
+> git remote set-url origin https://github.com/<tu-usuario>/minios-lab.git
+> git push -u origin main
+> ```
+
 `make` compila:
 
 - `./minios` — el scheduler y shell (con las 8 funciones tuyas)
