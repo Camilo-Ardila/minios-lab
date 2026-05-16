@@ -197,133 +197,237 @@ static void cmd_runpair(const char *name) {
 static void cmd_run(const char *path, const char *arg) {
     // Paso 1. Si path es NULL o vacio, imprimir mensaje de uso y retornar:
     //         "Uso: run <binario> [argumento]"
+    if (!path || strlen(path) == 0) {
+        printf("[CamilOS] ¿Qué quieres correr, manito? Usa: run <binario> [argumento]\n");
+        return;
+    }
 
-    // Paso 2. Validar que el archivo existe y es ejecutable:
-    //         access(path, X_OK) == 0. Si no, imprimir error y retornar.
+    // Paso 2. Verificar que el binario existe y es ejecutable con access(path, X_OK).
+    //         Si no: imprimir error y retornar.
+    if (access(path, X_OK) != 0) {
+        printf("[CamilOS] '%s' no existe o no es ejecutable, revisa el path\n", path);
+        return;
+    }
 
-    // Paso 3. Crear el proceso:
-    //         int idx = scheduler_create_process(path, arg);
-    //         Si idx < 0, retornar (el scheduler ya imprimio el error).
+    // Paso 3. Bloquear SIGALRM con block_alarm() antes de modificar
+    //         process_table (evitar race condition con scheduler_tick).
+    block_alarm();
 
-    // Paso 4. Si el scheduler NO esta corriendo Y la ready queue NO esta vacia,
-    //         arrancar el scheduler con timer_get_slice() como slice:
-    //         scheduler_start(timer_get_slice());
+    // Paso 4. Llamar scheduler_create_process(path, arg).
+    //         Si retorna -1, imprimir error, desbloquear y retornar.
+    int idx = scheduler_create_process(path, arg);
+    if (idx < 0) {
+        printf("[CamilOS] no se pudo crear el proceso, algo falló en el scheduler\n");
+        unblock_alarm();
+        return;
+    }
 
-    (void)path; (void)arg;  // silence unused while unimplemented
+    // Paso 5. Si el scheduler no está corriendo aún (!scheduler_is_running()),
+    //         llamar scheduler_start(timer_get_slice()) para arrancar.
+    if (!scheduler_is_running()) {
+        scheduler_start(timer_get_slice());
+    }
+
+    // Paso 6. Desbloquear SIGALRM con unblock_alarm().
+    unblock_alarm();
 }
 
 
 // ============================================================
 // [TODO 2/4] cmd_ps
 // ------------------------------------------------------------
-// Muestra la tabla de procesos con PCBs y la ready queue.
-// Debe invocar block_alarm antes de leer la process_table y
-// unblock_alarm al terminar.
+// Muestra la process table completa y el estado de la ready
+// queue. Equivalente al `ps` de un SO real pero dentro de
+// CamilOS.
 //
-// Formato esperado (puedes usar pcb_print_table() que ya lo hace):
-//   PID    NOMBRE           ESTADO          CPU(ms) ESPERA(ms)  SWITCHES
-//   -------------------------------------------------------------------
-//   1234   countdown        RUNNING            1520.3      120.0       3
-//   1235   primos           READY              1480.5      460.1       3
-//
-// Y tras la tabla, mostrar el contenido de la ready queue usando
-// rq_print() (que imprime algo como "Ready Queue: PID 1235 -> PID 1234").
+// Columnas: PID | Nombre | Estado | CPU (ms) | Espera (ms) | Switches
 // ============================================================
 static void cmd_ps(void) {
-    // Paso 1. block_alarm() para proteger la lectura de process_table.
+    // Paso 1. Bloquear SIGALRM — vamos a leer process_table y ready queue,
+    //         que también modifica scheduler_tick. Sin este bloqueo podría
+    //         haber una race condition y leer datos inconsistentes.
+    block_alarm();
 
-    // Paso 2. Si process_count == 0: imprimir "No hay procesos." y retornar
-    //         (recuerda hacer unblock_alarm antes de retornar!).
+    // Paso 2. Si no hay procesos todavía, avisar y salir.
+    if (process_count == 0) {
+        printf("[CamilOS] no hay procesos, usa 'run <binario>' para crear uno\n");
+        unblock_alarm();
+        return;
+    }
 
-    // Paso 3. Imprimir un salto de linea + llamar pcb_print_table().
+    // Paso 3. Imprimir encabezado de la tabla.
+    printf("\n");
+    printf("╔═════════════════════════════════════════════════════════════════════╗\n");
+    printf("║                  La gran tabla de procesos de CamilOS               ║\n");
+    printf("╠═══════╦══════════════════╦═══════════╦══════════╦══════════╦════════╣\n");
+    printf("║  PID  ║      Nombre      ║  Estado   ║ CPU (ms) ║ Wait(ms) ║ Switch ║\n");
+    printf("╠═══════╬══════════════════╬═══════════╬══════════╬══════════╬════════╣\n");
 
-    // Paso 4. Imprimir otro salto de linea + llamar rq_print().
+    // Paso 4. Iterar process_table e imprimir cada entrada.
+    for (int i = 0; i < process_count; i++) {
+        pcb_t *p = &process_table[i];
+        printf("║ %5d ║ %-16s ║ %-9s ║ %8.1f ║ %8.1f ║ %6d ║\n",
+            p->pid,
+            p->name,
+            pcb_state_name(p->state),
+            p->cpu_time_ms,
+            p->wait_time_ms,
+            p->context_switches);
+    }
 
-    // Paso 5. unblock_alarm() al terminar.
-    //
-    // Pista: puedes implementar esto desde cero con tu propio formato
-    // si prefieres. Los campos del PCB estan en pcb_t (ver pcb.h):
-    //   pid, name, state, cpu_time_ms, wait_time_ms, context_switches
+    printf("╚═══════╩══════════════════╩═══════════╩══════════╩══════════╩════════╝\n");
+
+    // Paso 5. Imprimir la ready queue con rq_print().
+    printf("\nReady Queue (En orden de ejecución):\n");
+    rq_print();
+
+    // Paso 6. Imprimir slice actual como referencia.
+    printf("\nTime slice actual: %d ms\n\n", timer_get_slice());
+
+    // Paso 7. Desbloquear SIGALRM.
+    unblock_alarm();
 }
 
 
 // ============================================================
 // [TODO 3/4] cmd_kill_proc
 // ------------------------------------------------------------
-// Recibe un PID como string, busca el proceso en process_table y
-// lo termina con SIGKILL. Debe remover el proceso de la ready queue
-// y marcar su PCB como PROC_TERMINATED.
+// Termina un proceso por PID: le manda SIGKILL, lo remueve de
+// la ready queue y marca su PCB como PROC_TERMINATED.
 //
-// Nota: El SIGCHLD handler del scheduler recogera el proceso, pero
-// es recomendable hacer waitpid aqui tambien para liberar recursos
-// inmediatamente y que `ps` refleje el cambio al instante.
+// Ejemplo de uso:
+//   CamilOS> kill 1234
 // ============================================================
 static void cmd_kill_proc(const char *arg) {
-    // Paso 1. Si arg es NULL o vacio, imprimir "Uso: kill <pid>" y retornar.
+    // Paso 1. Si arg es NULL o vacío, imprimir uso y retornar.
+    if (!arg || strlen(arg) == 0) {
+        printf("[CamilOS] ¿A quién nos bajamos? Usa: kill <pid>\n");
+        return;
+    }
 
-    // Paso 2. Convertir arg a entero con atoi. Si <= 0, imprimir "PID invalido"
-    //         y retornar.
+    // Paso 2. Convertir arg a entero con atoi().
+    int target_pid = atoi(arg);
+    if (target_pid <= 0) {
+        printf("[CamilOS] 🚫 PID inválido: '%s'\n", arg);
+        return;
+    }
 
-    // Paso 3. block_alarm() para proteger la lectura/modificacion.
+    // Paso 3. Bloquear SIGALRM — vamos a modificar process_table y ready queue.
+    block_alarm();
 
-    // Paso 4. Buscar el PID en process_table (loop por process_count):
-    //         - Si process_table[i].pid == target_pid Y estado != PROC_TERMINATED:
-    //           a) kill(target_pid, SIGKILL);
-    //           b) waitpid(target_pid, &status, 0);  // limpiar zombie
-    //           c) process_table[i].state = PROC_TERMINATED;
-    //           d) rq_remove(i);  // sacar de la ready queue
-    //           e) imprimir "Proceso PID <pid> terminado."
-    //           f) break;
+    // Paso 4. Buscar el PID en process_table.
+    int found = -1;
+    for (int i = 0; i < process_count; i++) {
+        if (process_table[i].pid == target_pid) {
+            found = i;
+            break;
+        }
+    }
 
-    // Paso 5. Si no se encontro, imprimir mensaje de error.
+    // Paso 5. Si no se encontró o ya está terminado, avisar y salir.
+    if (found < 0) {
+        printf("[CamilOS] PID %d no encontrado, mi rey\n", target_pid);
+        unblock_alarm();
+        return;
+    }
+    if (process_table[found].state == PROC_TERMINATED) {
+        printf("[CamilOS] PID %d ya ha terminado, mi rey\n", target_pid);
+        unblock_alarm();
+        return;
+    }
 
-    // Paso 6. unblock_alarm() al terminar.
+    // Paso 6. Mandar SIGKILL al proceso.
+    kill(target_pid, SIGKILL);
+    printf("[CamilOS] PID %d (%s) eliminado , que descanse en paz\n",
+           target_pid, process_table[found].name);
 
-    (void)arg;  // silence unused while unimplemented
+    // Paso 7. Si era el proceso RUNNING, limpiar current_running.
+    //         scheduler_sigchld lo despachará al siguiente automáticamente.
+    if (found == scheduler_get_running()) {
+        printf("[CamilOS] Era el proceso activo, despachando al siguiente...\n");
+    }
+
+    // Paso 8. Si estaba en la ready queue (estado READY), removerlo.
+    if (process_table[found].state == PROC_READY) {
+        rq_remove(found);
+        process_table[found].state = PROC_TERMINATED;
+    }
+
+    // Paso 9. Desbloquear SIGALRM.
+    unblock_alarm();
 }
 
 
 // ============================================================
 // [TODO 4/4] cmd_stats
 // ------------------------------------------------------------
-// Muestra metricas agregadas del scheduler:
-//   - Cantidad de procesos activos y terminados
-//   - Time slice actual
-//   - CPU total acumulado (suma de cpu_time_ms de todos)
-//   - Context switches totales
-//   - Promedios (CPU y espera) por proceso
+// Calcula y muestra métricas agregadas del scheduler:
+// CPU total, switches totales, procesos activos/terminados,
+// promedios de CPU y switches por proceso.
 //
-// Formato sugerido:
-//
-//   === Estadisticas del Scheduler ===
-//     Procesos activos:      2
-//     Procesos terminados:   1
-//     Time slice actual:     500 ms
-//     CPU total acumulado:   3450.2 ms
-//     Context switches:      12
-//     Avg CPU por proceso:   1150.1 ms
-//     Avg espera:            230.5 ms
+// Ejemplo de uso:
+//   CamilOS> stats
 // ============================================================
 static void cmd_stats(void) {
-    // Paso 1. block_alarm() para proteger la lectura.
+    // Paso 1. Bloquear SIGALRM — leemos process_table completa.
+    block_alarm();
 
-    // Paso 2. Declarar acumuladores:
-    //         int active = 0, terminated = 0;
-    //         double total_cpu = 0, total_wait = 0;
-    //         int total_switches = 0;
+    // Paso 2. Si no hay procesos, avisar y salir.
+    if (process_count == 0) {
+        printf("[CamilOS] 📊 Sin datos aún — lanza procesos con 'run'\n");
+        unblock_alarm();
+        return;
+    }
 
-    // Paso 3. Recorrer process_table sumando:
-    //         - Si state == PROC_TERMINATED: terminated++;  else active++;
-    //         - total_cpu += process_table[i].cpu_time_ms;
-    //         - total_wait += process_table[i].wait_time_ms;
-    //         - total_switches += process_table[i].context_switches;
+    // Paso 3. Calcular métricas iterando process_table.
+    double total_cpu    = 0.0;
+    int    total_sw     = 0;
+    int    activos      = 0;
+    int    terminados   = 0;
+    double max_cpu      = 0.0;
+    char   max_name[64] = "ninguno";
 
-    // Paso 4. Imprimir las estadisticas con los campos arriba.
-    //         Usar timer_get_slice() para el slice actual.
-    //         Si process_count > 0, imprimir tambien los promedios
-    //         (total_cpu / process_count) y (total_wait / process_count).
+    for (int i = 0; i < process_count; i++) {
+        pcb_t *p = &process_table[i];
+        total_cpu += p->cpu_time_ms;
+        total_sw  += p->context_switches;
 
-    // Paso 5. unblock_alarm().
+        if (p->state != PROC_TERMINATED) {
+            activos++;
+        } else {
+            terminados++;
+        }
+
+        if (p->cpu_time_ms > max_cpu) {
+            max_cpu = p->cpu_time_ms;
+            strncpy(max_name, p->name, sizeof(max_name) - 1);
+        }
+    }
+
+    double avg_cpu = total_cpu / process_count;
+    double avg_sw  = (double)total_sw / process_count;
+
+    // Paso 4. Imprimir reporte.
+    printf("\n");
+    printf("╔══════════════════════════════════════════════╗\n");
+    printf("║     CamilOS:El maldito reporte de procesos   ║\n");
+    printf("╠══════════════════════════════════════════════╣\n");
+    printf("║  Procesos totales   : %-4d                   ║\n", process_count);
+    printf("║  Activos            : %-4d                   ║\n", activos);
+    printf("║  Terminados         : %-4d                   ║\n", terminados);
+    printf("╠══════════════════════════════════════════════╣\n");
+    printf("║  CPU total          : %8.1f ms            ║\n", total_cpu);
+    printf("║  CPU promedio       : %8.1f ms            ║\n", avg_cpu);
+    printf("║  Mayor consumidor   : %-16s          ║\n", max_name);
+    printf("╠══════════════════════════════════════════════╣\n");
+    printf("║  Context switches   : %-6d                 ║\n", total_sw);
+    printf("║  Switches promedio  : %8.1f               ║\n", avg_sw);
+    printf("║  Time slice actual  : %-4d ms               ║\n", timer_get_slice());
+    printf("╚══════════════════════════════════════════════╝\n");
+    printf("\n");
+
+    // Paso 5. Desbloquear SIGALRM.
+    unblock_alarm();
 }
 
 
@@ -338,13 +442,13 @@ void shell_run(void) {
     sigaddset(&alarm_mask, SIGALRM);
 
     printf("+----------------------------------+\n");
-    printf("|       miniOS v1.0                |\n");
+    printf("|       CamilOS v1.0               |\n");
     printf("|   Simulador de Context Switching |\n");
     printf("|   Escribe 'help' para ayuda      |\n");
     printf("+----------------------------------+\n\n");
 
     while (1) {
-        printf("miniOS> ");
+        printf("CamilOS> ");
         fflush(stdout);
 
         if (fgets(line, sizeof(line), stdin) == NULL) {
@@ -402,7 +506,7 @@ void shell_run(void) {
             scheduler_stop();
             monitor_close();
             unblock_alarm();
-            printf("Hasta luego.\n");
+            printf("Hasta luego, mi rey.\n");
             break;
         } else {
             printf("Comando desconocido: '%s'. Escribe 'help' para ver comandos.\n", cmd);

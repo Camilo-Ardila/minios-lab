@@ -24,7 +24,7 @@ export default function App() {
     <div className="min-h-screen bg-gray-950 text-gray-200 p-4">
       {/* Header */}
       <div className="mb-4">
-        <h1 className="text-2xl font-bold text-white">miniOS Dashboard</h1>
+        <h1 className="text-2xl font-bold text-white">CamilOS Dashboard</h1>
         <p className="text-gray-500 text-sm">Simulador de Context Switching — Observabilidad en tiempo real</p>
       </div>
 

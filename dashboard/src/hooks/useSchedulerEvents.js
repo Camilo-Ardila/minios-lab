@@ -103,19 +103,24 @@ export default function useSchedulerEvents() {
             case 'PROCESS_CREATED': {
               const color = PROCESS_COLORS[colorIndexRef.current % PROCESS_COLORS.length];
               colorIndexRef.current++;
-              setProcesses(prev => ({
-                ...prev,
-                [event.pid]: {
-                  pid: event.pid,
-                  name: event.name,
-                  state: 'READY',
-                  cpuTime: 0,
-                  switches: 0,
-                  segments: [],
-                  createdAt: getRelativeTime(),
-                  color,
-                }
-              }));
+              const createdAt = getRelativeTime();
+              setProcesses(prev => {
+                // Si ya hay procesos activos, este empieza en READY sin segmento abierto
+                const hasRunning = Object.values(prev).some(p => p.state === 'RUNNING');
+                return {
+                  ...prev,
+                  [event.pid]: {
+                    pid: event.pid,
+                    name: event.name,
+                    state: hasRunning ? 'READY' : 'RUNNING',
+                    cpuTime: 0,
+                    switches: 0,
+                    segments: hasRunning ? [] : [{ start: createdAt, end: null }],
+                    createdAt,
+                    color,
+                  }
+                };
+              });
               break;
             }
 
@@ -126,10 +131,14 @@ export default function useSchedulerEvents() {
 
                 if (updated[event.from]) {
                   const proc = { ...updated[event.from] };
-                  const lastSeg = proc.segments[proc.segments.length - 1];
+                  const segs = [...proc.segments];
+                  const lastSeg = segs[segs.length - 1];
                   if (lastSeg && !lastSeg.end) {
                     lastSeg.end = now;
+                    // Acumular CPU del segmento que acaba de terminar
+                    proc.cpuTime = (proc.cpuTime || 0) + (lastSeg.end - lastSeg.start) * 1000;
                   }
+                  proc.segments = segs;
                   proc.state = 'READY';
                   proc.switches = (proc.switches || 0) + 1;
                   updated[event.from] = proc;
@@ -141,6 +150,18 @@ export default function useSchedulerEvents() {
                   proc.state = 'RUNNING';
                   updated[event.to] = proc;
                 }
+
+                Object.keys(updated).forEach(pid => {
+                const p = updated[pid];
+                if (p.state === 'TERMINATED') {
+                  const segs = [...p.segments];
+                  const last = segs[segs.length - 1];
+                  if (last && !last.end) {
+                    last.end = now;
+                    updated[pid] = { ...p, segments: segs };
+                  }
+                }
+              });
 
                 return updated;
               });

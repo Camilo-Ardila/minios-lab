@@ -11,6 +11,7 @@ export default function GanttChart({ processes, getRelativeTime }) {
   const [zoomLevel, setZoomLevel] = useState(1.0);
   const followRightRef = useRef(true);
 
+  // Scroll handler
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -25,94 +26,90 @@ export default function GanttChart({ processes, getRelativeTime }) {
     return () => container.removeEventListener('scroll', handleScroll);
   }, []);
 
+  // Canvas draw — se ejecuta cada vez que processes cambia
   useEffect(() => {
     const canvas = canvasRef.current;
     const container = containerRef.current;
     if (!canvas || !container) return;
 
     const ctx = canvas.getContext('2d');
+    const now = getRelativeTime();
+    const timeWindow = Math.max(now, 10);
+    const procs = Object.values(processes);
 
-    const draw = () => {
-      const containerWidth = container.clientWidth;
-      const canvasWidth = Math.max(containerWidth, containerWidth * zoomLevel);
-      canvas.width = canvasWidth;
-      canvas.height = Math.max(200, Object.keys(processes).length * 40 + 40);
+    const containerWidth = container.clientWidth;
+    const canvasWidth = Math.max(containerWidth, containerWidth * zoomLevel);
+    canvas.width = canvasWidth;
+    canvas.height = Math.max(200, procs.length * 40 + 40);
 
-      const now = getRelativeTime();
-      const timeWindow = Math.max(now, 10);
-      const procs = Object.values(processes);
-      const w = canvas.width;
-      const h = canvas.height;
-      const rowH = 30;
-      const labelW = 90;
-      const chartW = w - labelW - 20;
-      const topMargin = 30;
+    const w = canvas.width;
+    const h = canvas.height;
+    const rowH = 30;
+    const labelW = 90;
+    const chartW = w - labelW - 20;
+    const topMargin = 30;
 
-      ctx.clearRect(0, 0, w, h);
+    ctx.clearRect(0, 0, w, h);
 
-      // Background
-      ctx.fillStyle = '#111827';
-      ctx.fillRect(0, 0, w, h);
+    // Background
+    ctx.fillStyle = '#111827';
+    ctx.fillRect(0, 0, w, h);
 
-      // Time axis
-      const numTicks = Math.max(5, Math.floor(chartW / 100));
-      ctx.fillStyle = '#6b7280';
-      ctx.font = '11px monospace';
-      for (let i = 0; i <= numTicks; i++) {
-        const x = labelW + (chartW * i / numTicks);
-        const t = (timeWindow * i / numTicks).toFixed(1);
-        ctx.fillText(`${t}s`, x, 15);
-        ctx.strokeStyle = '#1f2937';
-        ctx.beginPath();
-        ctx.moveTo(x, topMargin);
-        ctx.lineTo(x, h);
-        ctx.stroke();
-      }
+    // Time axis
+    const numTicks = Math.max(5, Math.floor(chartW / 100));
+    ctx.fillStyle = '#6b7280';
+    ctx.font = '11px monospace';
+    for (let i = 0; i <= numTicks; i++) {
+      const x = labelW + (chartW * i / numTicks);
+      const t = (timeWindow * i / numTicks).toFixed(1);
+      ctx.fillText(`${t}s`, x, 15);
+      ctx.strokeStyle = '#1f2937';
+      ctx.beginPath();
+      ctx.moveTo(x, topMargin);
+      ctx.lineTo(x, h);
+      ctx.stroke();
+    }
 
-      procs.forEach((proc, i) => {
-        const y = topMargin + i * (rowH + 5);
-        const procColor = proc.color || DEFAULT_COLOR;
+    procs.forEach((proc, i) => {
+      const y = topMargin + i * (rowH + 5);
+      const procColor = proc.color || DEFAULT_COLOR;
 
-        // Color swatch next to label
+      // Color swatch
+      ctx.fillStyle = procColor;
+      ctx.fillRect(2, y + 8, 4, rowH - 12);
+
+      // Label
+      ctx.fillStyle = '#d1d5db';
+      ctx.font = '12px monospace';
+      ctx.fillText(`${proc.pid}`, 10, y + 18);
+      ctx.fillStyle = '#9ca3af';
+      ctx.font = '10px monospace';
+      ctx.fillText(proc.name, 10, y + 28);
+
+      // Segments
+      (proc.segments || []).forEach(seg => {
+        const startX = labelW + (seg.start / timeWindow) * chartW;
+        const segEnd = seg.end ?? (proc.state === 'RUNNING' ? now : seg.start);
+        const endX = labelW + (segEnd / timeWindow) * chartW;
+        const segW = Math.max(endX - startX, 1);
+
         ctx.fillStyle = procColor;
-        ctx.fillRect(2, y + 8, 4, rowH - 12);
-
-        // Label
-        ctx.fillStyle = '#d1d5db';
-        ctx.font = '12px monospace';
-        ctx.fillText(`${proc.pid}`, 10, y + 18);
-        ctx.fillStyle = '#9ca3af';
-        ctx.font = '10px monospace';
-        ctx.fillText(proc.name, 10, y + 28);
-
-        // Segments — use the process-specific color
-        (proc.segments || []).forEach(seg => {
-          const startX = labelW + (seg.start / timeWindow) * chartW;
-          const segEnd = seg.end || (proc.state === 'TERMINATED' ? seg.start : now);
-          const endX = labelW + (segEnd / timeWindow) * chartW;
-          const segW = Math.max(endX - startX, 1);
-
-          ctx.fillStyle = procColor;
-          ctx.fillRect(startX, y + 2, segW, rowH - 4);
-        });
-
-        // Row separator
-        ctx.strokeStyle = '#1f2937';
-        ctx.beginPath();
-        ctx.moveTo(labelW, y + rowH + 2);
-        ctx.lineTo(w, y + rowH + 2);
-        ctx.stroke();
+        ctx.fillRect(startX, y + 2, segW, rowH - 4);
       });
 
-      // Auto-scroll to follow "now"
-      if (followRightRef.current && container.scrollWidth > container.clientWidth) {
-        container.scrollLeft = container.scrollWidth - container.clientWidth;
-      }
-    };
+      // Row separator
+      ctx.strokeStyle = '#1f2937';
+      ctx.beginPath();
+      ctx.moveTo(labelW, y + rowH + 2);
+      ctx.lineTo(w, y + rowH + 2);
+      ctx.stroke();
+    });
 
-    draw();
-    const interval = setInterval(draw, 200);
-    return () => clearInterval(interval);
+    // Auto-scroll
+    if (followRightRef.current && container.scrollWidth > container.clientWidth) {
+      container.scrollLeft = container.scrollWidth - container.clientWidth;
+    }
+
   }, [processes, getRelativeTime, zoomLevel]);
 
   const handleZoomIn = () => setZoomLevel(prev => Math.min(prev * ZOOM_STEP, ZOOM_MAX));

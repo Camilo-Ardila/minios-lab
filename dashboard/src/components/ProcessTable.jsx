@@ -12,7 +12,7 @@ export default function ProcessTable({ processes, selectedPid, onSelect }) {
   if (procs.length === 0) {
     return (
       <div className="text-gray-500 text-center py-8">
-        No hay procesos. Usa <code className="text-gray-400">run</code> en miniOS para lanzar uno.
+        No hay procesos. Usa <code className="text-gray-400">run</code> en CamilOS para lanzar uno.
       </div>
     );
   }
